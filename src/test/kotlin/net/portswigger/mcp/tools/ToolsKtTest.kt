@@ -214,15 +214,34 @@ class ToolsKtTest {
         }
 
         @Test
-        fun `default MCP tool set should contain no more than 15 tools`() {
+        fun `default MCP tool set should expose original tool names`() {
             runBlocking {
                 val names = client.listTools().map { it.name }.sorted()
-                assertTrue(names.size <= 15, "Default tool count should be <= 15 but was ${names.size}: $names")
+                listOf(
+                    "send_http1_request",
+                    "send_http2_request",
+                    "create_repeater_tab",
+                    "send_to_intruder",
+                    "url_encode",
+                    "url_decode",
+                    "base64_encode",
+                    "base64_decode",
+                    "generate_random_string",
+                    "get_proxy_http_history",
+                    "get_proxy_websocket_history",
+                    "get_site_map",
+                    "submit_task",
+                    "read_file",
+                    "clear_database",
+                    "graphql_introspect"
+                ).forEach { expected ->
+                    assertTrue(names.contains(expected), "$expected missing from default tools: $names")
+                }
             }
         }
 
         @Test
-        fun `advanced mode should restore high cost tools under original names`() {
+        fun `legacy advanced mode switch should keep high cost tools under original names`() {
             config.advancedMcpTools = true
             config.graphqlMcpTools = true
             serverManager.stop {}
@@ -2273,7 +2292,7 @@ class ToolsKtTest {
         }
 
         @Test
-        fun `manage_scope list and clear should preserve unrelated project option arrays`() {
+        fun `manage_scope list and clear should import only target scope options`() {
             val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
             val imported = slot<String>()
             val rawOptions = """
@@ -2316,8 +2335,8 @@ class ToolsKtTest {
             val scopeObject = target["scope"]!!.jsonObject
             assertEquals(0, scopeObject["include"]!!.jsonArray.size)
             assertTrue(scopeObject["exclude"].toString().contains("logout.example.com"))
-            assertTrue(target["sitemap"].toString().contains("sitemap.example.com"))
-            assertTrue(projectOptions["scanner"].toString().contains("custom_insertions"))
+            assertEquals(setOf("scope"), target.keys)
+            assertEquals(setOf("target"), projectOptions.keys)
         }
 
         @Test

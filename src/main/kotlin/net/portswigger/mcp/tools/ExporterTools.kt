@@ -294,11 +294,31 @@ fun Server.registerExporterTools(database: Database, exporter: Exporter, advance
 private data class LimitedBody(val value: String, val truncated: Boolean)
 
 private fun String.limitUtf8Bytes(maxBytes: Int): LimitedBody {
-    val bytes = toByteArray(Charsets.UTF_8)
-    if (bytes.size <= maxBytes) return LimitedBody(this, false)
-    var end = maxBytes
-    while (end > 0 && (bytes[end].toInt() and 0xC0) == 0x80) {
-        end--
+    if (maxBytes <= 0) return LimitedBody("", isNotEmpty())
+
+    var usedBytes = 0
+    var endIndex = 0
+    while (endIndex < length) {
+        val char = this[endIndex]
+        val charBytes = when {
+            char.code <= 0x7F -> 1
+            char.code <= 0x7FF -> 2
+            Character.isHighSurrogate(char) && endIndex + 1 < length && Character.isLowSurrogate(this[endIndex + 1]) -> 4
+            Character.isSurrogate(char) -> 1
+            else -> 3
+        }
+        if (usedBytes + charBytes > maxBytes) break
+        usedBytes += charBytes
+        endIndex += if (
+            Character.isHighSurrogate(char) &&
+            endIndex + 1 < length &&
+            Character.isLowSurrogate(this[endIndex + 1])
+        ) 2 else 1
     }
-    return LimitedBody(String(bytes, 0, end, Charsets.UTF_8), true)
+
+    return if (endIndex == length) {
+        LimitedBody(this, false)
+    } else {
+        LimitedBody(take(endIndex), true)
+    }
 }

@@ -288,12 +288,11 @@ private fun ProxyHttpRequestResponse.toProxyHttpEntry(maxBodySize: Int): ProxyHt
     return try {
         val request = this.request()
         val response = this.response()
-        val httpService = request.httpService()
         val method = request.method()
-        val url = "${if (httpService.secure()) "https" else "http"}://${httpService.host()}${request.path()}"
+        val url = buildUrl(request) ?: return null
         val responseBody = response?.body()?.toString()?.take(maxBodySize)
         val contentType = response?.headerValue("Content-Type")
-        val paramNames = extractParamNames(request.body()?.toString(), request.path())
+        val paramNames = extractParamNames(request.body()?.toString(), url)
         val signal = summarizeEndpoint(method, url, response?.statusCode()?.toInt(), contentType, paramNames, responseBody)
 
         val requestHeaders = request.headers().joinToString("\r\n") { "${it.name()}: ${it.value()}" }
@@ -353,6 +352,11 @@ private fun requestStableRepresentation(request: burp.api.montoya.http.message.r
 }
 
 private fun buildUrl(request: burp.api.montoya.http.message.requests.HttpRequest): String? {
+    runCatching { request.url() }
+        .getOrNull()
+        ?.takeIf { it.isNotBlank() }
+        ?.let { return it }
+
     val httpService = request.httpService()
     val path = request.path() ?: return null
     return "${if (httpService.secure()) "https" else "http"}://${httpService.host()}$path"

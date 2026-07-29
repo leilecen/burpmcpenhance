@@ -80,7 +80,7 @@ fun Server.registerTools(
     database: Database? = null,
     exporter: Exporter? = null
 ) {
-    val advancedTools = config.advancedMcpTools
+    val advancedTools = true
     // Register queue/file tools if infrastructure is available
     if (advancedTools && messageQueue != null && fileQueue != null) {
         registerQueueTools(api, messageQueue, fileQueue)
@@ -91,7 +91,7 @@ fun Server.registerTools(
         registerDiffTools(database)
     }
     registerScopeTools(api, config, advancedTools) { exporter?.reimport() }
-    if (config.graphqlMcpTools) registerGraphQLTools(api, config)
+    registerGraphQLTools(api, config)
 
     mcpTool<SendHttp1Request>("Issues an HTTP/1.1 request and returns the response.") {
         val allowed = runBlocking {

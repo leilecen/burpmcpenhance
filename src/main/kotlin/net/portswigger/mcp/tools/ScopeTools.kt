@@ -196,11 +196,22 @@ internal fun clearScopeIncludes(rawProjectOptionsJson: String): String {
     val scope = target["scope"]?.jsonObject ?: error("project_options.target.scope not found")
 
     val updatedScope = JsonObject(scope + ("include" to JsonArray(emptyList())))
-    val updatedTarget = JsonObject(target + ("scope" to updatedScope))
-    val updatedProjectOptions = JsonObject(projectOptions + ("target" to updatedTarget))
-    val updatedRoot: JsonElement = JsonObject(root + ("project_options" to updatedProjectOptions))
+    val updatedRoot: JsonElement = scopeOnlyProjectOptions(updatedScope)
     return Json.encodeToString(JsonElement.serializer(), updatedRoot)
 }
+
+private fun scopeOnlyProjectOptions(scope: JsonObject): JsonObject =
+    JsonObject(
+        mapOf(
+            "project_options" to JsonObject(
+                mapOf(
+                    "target" to JsonObject(
+                        mapOf("scope" to scope)
+                    )
+                )
+            )
+        )
+    )
 
 internal fun normalizeScanRequestContent(content: String): String =
     content.replace("\r", "").replace("\n", "\r\n")

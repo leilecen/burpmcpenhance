@@ -276,6 +276,25 @@ class ExporterTest {
     }
 
     @Test
+    fun `exportProxyHttpHistory should use full request URL for scope checks`() = runBlocking {
+        config.exportInScopeOnly = true
+        val scopeMock = mockk<Scope>(relaxed = true)
+        every { api.scope() } returns scopeMock
+        every { scopeMock.isInScope("http://example.com/api/users") } returns false
+        every { scopeMock.isInScope("http://example.com/api/users?id=1") } returns true
+
+        val entry = createMockProxyEntry(1000, "http://example.com/api/users?id=1", accept = "application/json")
+        every { api.proxy() } returns mockk<Proxy>(relaxed = true).apply {
+            every { history() } returns listOf(entry)
+        }
+
+        exporter.exportProxyHttpHistory()
+
+        assertEquals(1, database.stats().proxyHttpCount)
+        assertEquals("http://example.com/api/users?id=1", database.listProxyHttpHistory().single().url)
+    }
+
+    @Test
     fun `scope only filtering should count out of scope entries before writing`() = runBlocking {
         config.exportInScopeOnly = true
         val scopeMock = mockk<Scope>(relaxed = true)
@@ -475,13 +494,15 @@ class ExporterTest {
             }
         }
 
-        val path = java.net.URI(url).rawPath
+        val parsedUrl = java.net.URI(url)
+        val path = parsedUrl.rawPath + parsedUrl.rawQuery?.let { "?$it" }.orEmpty()
         val mockService = mockk<HttpService>(relaxed = true)
         every { mockRequest.httpService() } returns mockService
         every { mockService.host() } returns "example.com"
         every { mockService.port() } returns 80
         every { mockService.secure() } returns false
         every { mockRequest.path() } returns path
+        every { mockRequest.url() } returns url
         every { mockRequest.method() } returns method
         every { mockRequest.headers() } returns requestHeaders.map { (name, value) ->
             mockk<HttpHeader>(relaxed = true).also {
