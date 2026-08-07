@@ -21,6 +21,7 @@ class ServerConfigurationPanel(
 
     private lateinit var alwaysAllowHttpHistoryCheckBox: JCheckBox
     private lateinit var alwaysAllowWebSocketHistoryCheckBox: JCheckBox
+    private lateinit var alwaysAllowOrganizerCheckBox: JCheckBox
     private lateinit var exportInScopeOnlyCheckBox: JCheckBox
     private lateinit var exportNoiseModeComboBox: JComboBox<ExportNoiseModeOption>
     private lateinit var saveRawDuplicatesCheckBox: JCheckBox
@@ -49,6 +50,14 @@ class ServerConfigurationPanel(
         add(configEditingToolingCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
+        val filterConfigCredentialsCheckBox = createCheckBoxWithSubtitle(
+            "过滤配置输出中的凭据",
+            "默认隐藏密码、证书密码和 REST API 密钥哈希",
+            config.filterConfigCredentials
+        ) { config.filterConfigCredentials = it }
+        add(filterConfigCredentialsCheckBox)
+        add(createVerticalStrut(Design.Spacing.MD))
+
         val httpRequestApprovalCheckBox = createStandardCheckBox(
             "HTTP 请求需要审批", config.requireHttpRequestApproval
         ) { enabled ->
@@ -74,6 +83,14 @@ class ServerConfigurationPanel(
             config.requireHistoryAccessApproval
         ) { config.alwaysAllowWebSocketHistory = it }
         add(alwaysAllowWebSocketHistoryCheckBox)
+        add(createVerticalStrut(Design.Spacing.SM))
+
+        alwaysAllowOrganizerCheckBox = createIndentedCheckBox(
+            "始终允许 Organizer 访问",
+            config.alwaysAllowOrganizer,
+            config.requireHistoryAccessApproval
+        ) { config.alwaysAllowOrganizer = it }
+        add(alwaysAllowOrganizerCheckBox)
         add(createVerticalStrut(Design.Spacing.MD))
 
         exportInScopeOnlyCheckBox = createStandardCheckBox(
@@ -112,11 +129,14 @@ class ServerConfigurationPanel(
             if (!enabled) {
                 config.alwaysAllowHttpHistory = false
                 config.alwaysAllowWebSocketHistory = false
+                config.alwaysAllowOrganizer = false
                 alwaysAllowHttpHistoryCheckBox.isSelected = false
                 alwaysAllowWebSocketHistoryCheckBox.isSelected = false
+                alwaysAllowOrganizerCheckBox.isSelected = false
             }
             alwaysAllowHttpHistoryCheckBox.isEnabled = enabled
             alwaysAllowWebSocketHistoryCheckBox.isEnabled = enabled
+            alwaysAllowOrganizerCheckBox.isEnabled = enabled
         }
     }
 
@@ -124,6 +144,7 @@ class ServerConfigurationPanel(
         SwingUtilities.invokeLater {
             alwaysAllowHttpHistoryCheckBox.isSelected = config.alwaysAllowHttpHistory
             alwaysAllowWebSocketHistoryCheckBox.isSelected = config.alwaysAllowWebSocketHistory
+            alwaysAllowOrganizerCheckBox.isSelected = config.alwaysAllowOrganizer
         }
     }
 

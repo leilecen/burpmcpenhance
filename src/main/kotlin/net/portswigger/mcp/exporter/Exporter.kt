@@ -36,7 +36,7 @@ private val LOW_VALUE_BROWSER_PATH_FRAGMENTS = setOf(
 )
 
 private val NOISE_QUERY_KEYS = setOf(
-    "_", "t", "ts", "timestamp", "cb", "cacheBust", "cache_bust", "nonce", "rnd"
+    "_", "t", "ts", "_ts", "timestamp", "cb", "cacheBust", "cache_bust", "nonce", "rnd"
 )
 
 private val SENSITIVE_RESPONSE_MARKERS = listOf(

@@ -462,7 +462,7 @@ class ExporterTest {
         assertTrue(stored.sensitiveMarkerCount >= 1)
 
         val detail = database.getProxyHttpDetail(listOf(stored.id)).first()
-        assertEquals("http://example.com/api/admin/users", detail.canonicalUrl)
+        assertEquals("http://example.com/api/admin/users?id", detail.canonicalUrl)
         assertNotNull(detail.endpointFingerprint)
         assertTrue(detail.responseSummary?.contains("status=403") == true)
     }

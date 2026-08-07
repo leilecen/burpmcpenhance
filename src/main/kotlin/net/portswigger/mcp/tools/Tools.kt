@@ -30,9 +30,84 @@ import net.portswigger.mcp.schema.toSerializableForm
 import net.portswigger.mcp.security.HistoryAccessSecurity
 import net.portswigger.mcp.security.HistoryAccessType
 import net.portswigger.mcp.security.HttpRequestSecurity
+import net.portswigger.mcp.security.filterConfigCredentials
 import java.awt.KeyboardFocusManager
 import java.util.regex.Pattern
 import javax.swing.JTextArea
+
+internal fun normalizeHttpContent(content: String): String {
+    val preludeEnd = findHttpPreludeEnd(content) ?: return normalizeHttpPrelude(content)
+    return normalizeHttpPrelude(content.substring(0, preludeEnd)) + content.substring(preludeEnd)
+}
+
+private val HTTP_BLANK_LINE_MARKERS = listOf(
+    "\r\n\r\n",
+    "\n\n",
+    "\\r\\n\\r\\n",
+    "\\n\\n"
+)
+
+private fun findHttpPreludeEnd(content: String): Int? {
+    var firstMarkerStart = -1
+    var firstMarkerLength = 0
+    for (marker in HTTP_BLANK_LINE_MARKERS) {
+        val markerStart = content.indexOf(marker)
+        if (markerStart >= 0 && (firstMarkerStart < 0 || markerStart < firstMarkerStart)) {
+            firstMarkerStart = markerStart
+            firstMarkerLength = marker.length
+        }
+    }
+    return if (firstMarkerStart < 0) null else firstMarkerStart + firstMarkerLength
+}
+
+private fun normalizeHttpPrelude(prelude: String): String = prelude
+    .replace("\\r\\n", "\n")
+    .replace("\\n", "\n")
+    .replace("\\r", "")
+    .replace("\r", "")
+    .replace("\n", "\r\n")
+
+private fun buildHttp2HeaderList(
+    pseudoHeaders: Map<String, String>,
+    headers: Map<String, String>
+): List<HttpHeader> {
+    val orderedPseudoHeaderNames = listOf(":scheme", ":method", ":path", ":authority")
+    val normalizedPseudoHeaders = LinkedHashMap<String, String>().apply {
+        orderedPseudoHeaderNames.forEach { name ->
+            val value = pseudoHeaders[name.removePrefix(":")] ?: pseudoHeaders[name]
+            if (value != null) put(name, value)
+        }
+        pseudoHeaders.forEach { (key, value) ->
+            val normalizedKey = if (key.startsWith(":")) key else ":$key"
+            if (!containsKey(normalizedKey)) put(normalizedKey, value)
+        }
+    }
+    return (normalizedPseudoHeaders + headers).map { (name, value) ->
+        HttpHeader.httpHeader(name.lowercase(), value)
+    }
+}
+
+private data class OrganizerLimitedText(val value: String, val truncated: Boolean)
+
+private fun String.limitOrganizerText(maxChars: Int): OrganizerLimitedText {
+    if (length <= maxChars) return OrganizerLimitedText(this, false)
+    var end = maxChars
+    if (end > 0 && Character.isHighSurrogate(this[end - 1])) end--
+    return OrganizerLimitedText(substring(0, end), true)
+}
+
+private fun omitHttpBody(content: String): String {
+    val separators = listOf("\r\n\r\n", "\n\n")
+    val match = separators.mapNotNull { separator ->
+        content.indexOf(separator).takeIf { it >= 0 }?.let { it to separator.length }
+    }.minByOrNull { it.first } ?: return content
+    val bodyStart = match.first + match.second
+    return if (bodyStart < content.length) {
+        content.substring(0, bodyStart) + "<body omitted>"
+    } else {
+        content
+    }
+}
 
 private suspend fun checkHistoryPermissionOrDeny(
     accessType: HistoryAccessType, config: McpConfig, api: MontoyaApi, logMessage: String
@@ -104,12 +179,28 @@ fun Server.registerTools(
 
         api.logging().logToOutput("MCP HTTP/1.1 request: $targetHostname:$targetPort")
 
-        val fixedContent = content.replace("\r", "").replace("\n", "\r\n")
+        val fixedContent = normalizeHttpContent(content)
 
         val request = HttpRequest.httpRequest(toMontoyaService(), fixedContent)
         val response = api.http().sendRequest(request)
 
         response?.toString() ?: "<no response>"
+    }
+
+    mcpTool<CreateRepeaterTab>("Creates a new Repeater tab with the specified HTTP request and optional tab name. Make sure to use carriage returns appropriately.") {
+        val request = HttpRequest.httpRequest(toMontoyaService(), normalizeHttpContent(content))
+        api.repeater().sendToRepeater(request, tabName)
+    }
+
+    mcpTool<CreateRepeaterTabHttp2>(
+        "Creates an HTTP/2 Repeater tab with the specified headers, body, and optional tab name."
+    ) {
+        val request = HttpRequest.http2Request(
+            toMontoyaService(),
+            buildHttp2HeaderList(pseudoHeaders, headers),
+            requestBody
+        )
+        api.repeater().sendToRepeater(request, tabName)
     }
 
     if (advancedTools) {
@@ -138,39 +229,14 @@ fun Server.registerTools(
 
         api.logging().logToOutput("MCP HTTP/2 request: $targetHostname:$targetPort")
 
-        val orderedPseudoHeaderNames = listOf(":scheme", ":method", ":path", ":authority")
-
-        val fixedPseudoHeaders = LinkedHashMap<String, String>().apply {
-            orderedPseudoHeaderNames.forEach { name ->
-                val value = pseudoHeaders[name.removePrefix(":")] ?: pseudoHeaders[name]
-                if (value != null) {
-                    put(name, value)
-                }
-            }
-
-            pseudoHeaders.forEach { (key, value) ->
-                val properKey = if (key.startsWith(":")) key else ":$key"
-                if (!containsKey(properKey)) {
-                    put(properKey, value)
-                }
-            }
-        }
-
-        val headerList = (fixedPseudoHeaders + headers).map { HttpHeader.httpHeader(it.key.lowercase(), it.value) }
-
-        val request = HttpRequest.http2Request(toMontoyaService(), headerList, requestBody)
+        val request = HttpRequest.http2Request(toMontoyaService(), buildHttp2HeaderList(pseudoHeaders, headers), requestBody)
         val response = api.http().sendRequest(request, HttpMode.HTTP_2)
 
         response?.toString() ?: "<no response>"
     }
 
-    mcpTool<CreateRepeaterTab>("Creates a new Repeater tab with the specified HTTP request and optional tab name. Make sure to use carriage returns appropriately.") {
-        val request = HttpRequest.httpRequest(toMontoyaService(), content)
-        api.repeater().sendToRepeater(request, tabName)
-    }
-
     mcpTool<SendToIntruder>("Sends an HTTP request to Intruder with the specified HTTP request and optional tab name. Make sure to use carriage returns appropriately.") {
-        val request = HttpRequest.httpRequest(toMontoyaService(), content)
+        val request = HttpRequest.httpRequest(toMontoyaService(), normalizeHttpContent(content))
         api.intruder().sendToIntruder(request, tabName)
     }
 
@@ -198,14 +264,16 @@ fun Server.registerTools(
         "output_project_options",
         "Outputs current project-level configuration in JSON format. You can use this to determine the schema for available config options."
     ) {
-        api.burpSuite().exportProjectOptionsAsJson()
+        val json = api.burpSuite().exportProjectOptionsAsJson()
+        if (config.filterConfigCredentials) filterConfigCredentials(json) else json
     }
 
     mcpTool(
         "output_user_options",
         "Outputs current user-level configuration in JSON format. You can use this to determine the schema for available config options."
     ) {
-        api.burpSuite().exportUserOptionsAsJson()
+        val json = api.burpSuite().exportUserOptionsAsJson()
+        if (config.filterConfigCredentials) filterConfigCredentials(json) else json
     }
 
     val toolingDisabledMessage =
@@ -321,6 +389,72 @@ fun Server.registerTools(
                 .map { truncateIfNeeded(Json.encodeToString(it.toSerializableForm())) }
         }
         limitedRawHistoryResponse(items, offset, limit ?: count, maxBytes)
+    }
+
+    mcpTool<ListOrganizerItems>(
+        "Lists lightweight Organizer summaries. Use get_organizer_item_detail with selected IDs for request/response evidence."
+    ) {
+        val allowed = runBlocking {
+            checkHistoryPermissionOrDeny(HistoryAccessType.ORGANIZER, config, api, "Organizer")
+        }
+        if (!allowed) return@mcpTool "Organizer access denied by Burp Suite"
+
+        val normalizedQuery = query?.trim()?.takeIf { it.isNotEmpty() }
+        val summaries = api.organizer().items().asSequence().map { item ->
+            val requestText = item.request()?.toString().orEmpty()
+            val requestLine = requestText.lineSequence().firstOrNull().orEmpty().limitOrganizerText(512)
+            val notes = item.annotations().notes()?.limitOrganizerText(512)
+            OrganizerItemSummary(
+                id = item.id(),
+                status = item.status().displayName(),
+                requestLine = requestLine.value,
+                hasResponse = item.response() != null,
+                notes = notes?.value,
+                requestLineTruncated = requestLine.truncated,
+                notesTruncated = notes?.truncated == true
+            )
+        }.filter { summary ->
+            normalizedQuery == null || listOf(summary.status, summary.requestLine, summary.notes.orEmpty())
+                .any { it.contains(normalizedQuery, ignoreCase = true) }
+        }.drop(offset.coerceAtLeast(0)).take(count.coerceIn(1, 50)).toList()
+        Json.encodeToString(summaries)
+    }
+
+    mcpTool<GetOrganizerItemDetail>(
+        "Gets Organizer items by comma-separated IDs. Bodies are omitted by default; set includeBody=true explicitly when needed."
+    ) {
+        val allowed = runBlocking {
+            checkHistoryPermissionOrDeny(HistoryAccessType.ORGANIZER, config, api, "Organizer")
+        }
+        if (!allowed) return@mcpTool "Organizer access denied by Burp Suite"
+
+        val requestedIds = ids.split(',').mapNotNull { it.trim().toIntOrNull() }.distinct().take(20)
+        if (requestedIds.isEmpty()) return@mcpTool "{\"error\":\"no valid organizer ids\"}"
+        val itemById = api.organizer().items().associateBy { it.id() }
+        val safeMaxChars = maxChars.coerceIn(1_024, 262_144)
+        val details = requestedIds.mapNotNull { id ->
+            itemById[id]?.let { item ->
+                val request = item.request()?.toString().orEmpty()
+                val response = item.response()?.toString().orEmpty()
+                val limitedRequest = (if (includeBody) request else omitHttpBody(request))
+                    .limitOrganizerText(safeMaxChars)
+                val limitedResponse = (if (includeBody) response else omitHttpBody(response))
+                    .limitOrganizerText(safeMaxChars)
+                val limitedNotes = item.annotations().notes()?.limitOrganizerText(safeMaxChars)
+                OrganizerItemDetail(
+                    id = item.id(),
+                    status = item.status().displayName(),
+                    request = limitedRequest.value,
+                    response = limitedResponse.value,
+                    notes = limitedNotes?.value,
+                    bodyIncluded = includeBody,
+                    requestTruncated = limitedRequest.truncated,
+                    responseTruncated = limitedResponse.truncated,
+                    notesTruncated = limitedNotes?.truncated == true
+                )
+            }
+        }
+        Json.encodeToString(details)
     }
 
     mcpTool<SetTaskExecutionEngineState>("Sets the state of Burp's task execution engine (paused or unpaused)") {
@@ -489,7 +623,7 @@ data class SendHttp2Request(
 
 @Serializable
 data class CreateRepeaterTab(
-    val tabName: String?,
+    val tabName: String? = null,
     val content: String,
     override val targetHostname: String,
     override val targetPort: Int,
@@ -497,8 +631,19 @@ data class CreateRepeaterTab(
 ) : HttpServiceParams
 
 @Serializable
+data class CreateRepeaterTabHttp2(
+    val pseudoHeaders: Map<String, String>,
+    val headers: Map<String, String>,
+    val requestBody: String,
+    override val targetHostname: String,
+    override val targetPort: Int,
+    override val usesHttps: Boolean,
+    val tabName: String? = null
+) : HttpServiceParams
+
+@Serializable
 data class SendToIntruder(
-    val tabName: String?,
+    val tabName: String? = null,
     val content: String,
     override val targetHostname: String,
     override val targetPort: Int,
@@ -559,6 +704,44 @@ data class GetProxyWebsocketHistory(
     override val count: Int = RAW_HISTORY_DEFAULT_LIMIT,
     override val offset: Int = 0
 ) : Paginated
+
+@Serializable
+data class ListOrganizerItems(
+    val count: Int = 20,
+    val offset: Int = 0,
+    val query: String? = null
+)
+
+@Serializable
+data class GetOrganizerItemDetail(
+    val ids: String,
+    val includeBody: Boolean = false,
+    val maxChars: Int = 65_536
+)
+
+@Serializable
+data class OrganizerItemSummary(
+    val id: Int,
+    val status: String,
+    val requestLine: String,
+    val hasResponse: Boolean,
+    val notes: String?,
+    val requestLineTruncated: Boolean,
+    val notesTruncated: Boolean
+)
+
+@Serializable
+data class OrganizerItemDetail(
+    val id: Int,
+    val status: String,
+    val request: String,
+    val response: String,
+    val notes: String?,
+    val bodyIncluded: Boolean,
+    val requestTruncated: Boolean,
+    val responseTruncated: Boolean,
+    val notesTruncated: Boolean
+)
 
 @Serializable
 data class GenerateCollaboratorPayload(

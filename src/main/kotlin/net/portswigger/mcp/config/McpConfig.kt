@@ -37,6 +37,7 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
     var keepaliveIntervalSec by storage.int(30)
     var maxResponseSizeKb by storage.int(100)
     var strictLocalhostMode by storage.boolean(true)
+    var filterConfigCredentials by storage.boolean(true)
     var advancedMcpTools by storage.boolean(true)
     var graphqlMcpTools by storage.boolean(true)
     var exportInScopeOnly by storage.boolean(false)
@@ -75,6 +76,16 @@ class McpConfig(storage: PersistedObject, private val logging: Logging) {
         set(value) {
             if (_alwaysAllowWebSocketHistory != value) {
                 _alwaysAllowWebSocketHistory = value
+                notifyHistoryAccessChanged()
+            }
+        }
+
+    private var _alwaysAllowOrganizer by storage.boolean(false)
+    var alwaysAllowOrganizer: Boolean
+        get() = _alwaysAllowOrganizer
+        set(value) {
+            if (_alwaysAllowOrganizer != value) {
+                _alwaysAllowOrganizer = value
                 notifyHistoryAccessChanged()
             }
         }

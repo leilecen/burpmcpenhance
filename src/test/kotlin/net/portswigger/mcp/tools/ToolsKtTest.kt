@@ -16,6 +16,11 @@ import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
 import burp.api.montoya.proxy.Proxy
 import burp.api.montoya.proxy.ProxyHttpRequestResponse
+import burp.api.montoya.intruder.Intruder
+import burp.api.montoya.organizer.Organizer
+import burp.api.montoya.organizer.OrganizerItem
+import burp.api.montoya.organizer.OrganizerItemStatus
+import burp.api.montoya.repeater.Repeater
 import burp.api.montoya.utilities.Base64Utils
 import burp.api.montoya.utilities.RandomUtils
 import burp.api.montoya.utilities.URLUtils
@@ -38,12 +43,17 @@ import net.portswigger.mcp.db.ProxyHttpEntry
 import net.portswigger.mcp.db.ScannerIssueEntry
 import net.portswigger.mcp.schema.HttpRequestResponse
 import net.portswigger.mcp.schema.toSerializableForm
+import net.portswigger.mcp.security.HistoryAccessApprovalHandler
+import net.portswigger.mcp.security.HistoryAccessSecurity
+import net.portswigger.mcp.security.HistoryAccessType
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import java.net.ServerSocket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.swing.JTextArea
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -79,6 +89,7 @@ class ToolsKtTest {
                     "_alwaysAllowWebSocketHistory" to false,
                     "keepaliveEnabled" to true,
                     "strictLocalhostMode" to true,
+                    "filterConfigCredentials" to true,
                     "filterBrowserNoise" to true,
                     "advancedMcpTools" to true,
                     "graphqlMcpTools" to true
@@ -193,11 +204,13 @@ class ToolsKtTest {
 
     @Nested
     inner class McpDefaultToolRegistrationTests {
-        @BeforeEach
-        fun restartInDefaultMode() {
-            config.advancedMcpTools = false
-            config.graphqlMcpTools = false
-            serverManager.stop {}
+        private fun restartServer() {
+            val stopped = CountDownLatch(1)
+            serverManager.stop { state ->
+                if (state is ServerState.Stopped) stopped.countDown()
+            }
+            assertTrue(stopped.await(10, TimeUnit.SECONDS), "Server failed to stop after timeout")
+
             serverStarted = false
             serverManager.start(config) { state ->
                 if (state is ServerState.Running) serverStarted = true
@@ -213,6 +226,13 @@ class ToolsKtTest {
             }
         }
 
+        @BeforeEach
+        fun restartInDefaultMode() {
+            config.advancedMcpTools = false
+            config.graphqlMcpTools = false
+            restartServer()
+        }
+
         @Test
         fun `default MCP tool set should expose original tool names`() {
             runBlocking {
@@ -221,6 +241,7 @@ class ToolsKtTest {
                     "send_http1_request",
                     "send_http2_request",
                     "create_repeater_tab",
+                    "create_repeater_tab_http2",
                     "send_to_intruder",
                     "url_encode",
                     "url_decode",
@@ -229,6 +250,8 @@ class ToolsKtTest {
                     "generate_random_string",
                     "get_proxy_http_history",
                     "get_proxy_websocket_history",
+                    "list_organizer_items",
+                    "get_organizer_item_detail",
                     "get_site_map",
                     "submit_task",
                     "read_file",
@@ -244,19 +267,8 @@ class ToolsKtTest {
         fun `legacy advanced mode switch should keep high cost tools under original names`() {
             config.advancedMcpTools = true
             config.graphqlMcpTools = true
-            serverManager.stop {}
-            serverStarted = false
-            serverManager.start(config) { state ->
-                if (state is ServerState.Running) serverStarted = true
-            }
+            restartServer()
             runBlocking {
-                var attempts = 0
-                while (!serverStarted && attempts < 30) {
-                    delay(100)
-                    attempts++
-                }
-                if (!serverStarted) throw IllegalStateException("Server failed to start after timeout")
-                client.connectToServer("http://127.0.0.1:${testPort}/sse")
                 val names = client.listTools().map { it.name }
                 listOf(
                     "get_proxy_http_history",
@@ -272,7 +284,219 @@ class ToolsKtTest {
     }
 
     @Nested
+    inner class OrganizerToolsTests {
+        @Test
+        fun `organizer tools should use summary then explicit body detail`() {
+            val organizer = mockk<Organizer>()
+            val item = mockk<OrganizerItem>()
+            val request = mockk<HttpRequest>()
+            val response = mockk<HttpResponse>()
+            val annotations = mockk<Annotations>()
+            val requestText = "POST /login HTTP/1.1\r\nHost: example.com\r\n\r\n" +
+                "A".repeat(1_500) + "password=organizer-secret"
+            val responseText = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nprivate-response"
+
+            every { api.organizer() } returns organizer
+            every { organizer.items() } returns listOf(item)
+            every { item.id() } returns 7
+            every { item.status() } returns OrganizerItemStatus.DONE
+            every { item.request() } returns request
+            every { item.response() } returns response
+            every { item.annotations() } returns annotations
+            every { annotations.notes() } returns "confirmed"
+            every { request.toString() } returns requestText
+            every { response.toString() } returns responseText
+
+            runBlocking {
+                val summaryText = client.callTool(
+                    "list_organizer_items", mapOf("count" to 20, "offset" to 0)
+                ).expectTextContent()
+                val summary = Json.parseToJsonElement(summaryText).jsonArray.single().jsonObject
+                assertEquals("7", summary["id"].toString())
+                assertTrue(summary["requestLine"].toString().contains("POST /login HTTP/1.1"))
+                assertFalse(summaryText.contains("organizer-secret"))
+
+                val headersOnlyText = client.callTool(
+                    "get_organizer_item_detail", mapOf("ids" to "7")
+                ).expectTextContent()
+                Json.parseToJsonElement(headersOnlyText)
+                assertTrue(headersOnlyText.contains("body omitted"))
+                assertFalse(headersOnlyText.contains("organizer-secret"))
+                assertFalse(headersOnlyText.contains("private-response"))
+
+                val withBodyText = client.callTool(
+                    "get_organizer_item_detail", mapOf("ids" to "7", "includeBody" to true)
+                ).expectTextContent()
+                Json.parseToJsonElement(withBodyText)
+                assertTrue(withBodyText.contains("organizer-secret"))
+                assertTrue(withBodyText.contains("private-response"))
+
+                val truncatedText = client.callTool(
+                    "get_organizer_item_detail",
+                    mapOf("ids" to "7", "includeBody" to true, "maxChars" to 1_024)
+                ).expectTextContent()
+                val truncated = Json.parseToJsonElement(truncatedText).jsonArray.single().jsonObject
+                assertEquals("true", truncated["requestTruncated"].toString())
+                assertFalse(truncatedText.contains("organizer-secret"))
+            }
+        }
+
+        @Test
+        fun `organizer access denial should not read organizer items`() {
+            val organizer = mockk<Organizer>(relaxed = true)
+            val deniedHandler = mockk<HistoryAccessApprovalHandler>()
+            val originalHandler = HistoryAccessSecurity.approvalHandler
+            every { api.organizer() } returns organizer
+            coEvery { deniedHandler.requestHistoryAccess(HistoryAccessType.ORGANIZER, config) } returns false
+
+            try {
+                config.requireHistoryAccessApproval = true
+                config.alwaysAllowOrganizer = false
+                HistoryAccessSecurity.approvalHandler = deniedHandler
+
+                runBlocking {
+                    client.callTool(
+                        "list_organizer_items", mapOf("count" to 20, "offset" to 0)
+                    ).expectTextContent("Organizer access denied by Burp Suite")
+                }
+
+                verify(exactly = 0) { organizer.items() }
+            } finally {
+                HistoryAccessSecurity.approvalHandler = originalHandler
+                config.requireHistoryAccessApproval = false
+                config.alwaysAllowOrganizer = false
+            }
+        }
+    }
+
+    @Nested
     inner class HttpToolsTests {
+        @Test
+        fun `http2 repeater should allow omitted tab name and preserve header ordering`() {
+            val repeater = mockk<Repeater>(relaxed = true)
+            val request = mockk<HttpRequest>()
+            val headersSlot = slot<List<HttpHeader>>()
+            val bodySlot = slot<String>()
+
+            every { api.repeater() } returns repeater
+            every { HttpRequest.http2Request(any(), capture(headersSlot), capture(bodySlot)) } returns request
+
+            runBlocking {
+                client.callTool(
+                    "create_repeater_tab_http2", mapOf(
+                        "pseudoHeaders" to Json.encodeToJsonElement(
+                            linkedMapOf("path" to "/test", "authority" to "example.com", "method" to "POST", "scheme" to "https")
+                        ),
+                        "headers" to Json.encodeToJsonElement(mapOf("Content-Type" to "application/json")),
+                        "requestBody" to "{\"ok\":true}",
+                        "targetHostname" to "example.com",
+                        "targetPort" to 443,
+                        "usesHttps" to true
+                    )
+                ).expectTextContent()
+            }
+
+            assertEquals(
+                listOf(":scheme", ":method", ":path", ":authority"),
+                headersSlot.captured.filter { it.name().startsWith(":") }.map { it.name() }
+            )
+            assertEquals("{\"ok\":true}", bodySlot.captured)
+            verify(exactly = 1) { repeater.sendToRepeater(request, null) }
+        }
+
+        @Test
+        fun `http1 repeater should allow omitted tab name`() {
+            val repeater = mockk<Repeater>(relaxed = true)
+            val request = mockk<HttpRequest>()
+            every { api.repeater() } returns repeater
+            every { HttpRequest.httpRequest(any(), any<String>()) } returns request
+
+            runBlocking {
+                client.callTool(
+                    "create_repeater_tab", mapOf(
+                        "content" to "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
+                        "targetHostname" to "example.com",
+                        "targetPort" to 80,
+                        "usesHttps" to false
+                    )
+                ).expectTextContent()
+            }
+
+            verify(exactly = 1) { repeater.sendToRepeater(request, null) }
+        }
+
+        @Test
+        fun `normalization should treat content without a separator as prelude`() {
+            assertEquals(
+                "GET / HTTP/1.1\r\nHost: example.com",
+                normalizeHttpContent("GET / HTTP/1.1\\nHost: example.com")
+            )
+        }
+
+        @Test
+        fun `normalization should preserve actual body line endings`() {
+            assertEquals(
+                "POST / HTTP/1.1\r\nHost: example.com\r\n\r\nline1\nline2",
+                normalizeHttpContent("POST / HTTP/1.1\nHost: example.com\n\nline1\nline2")
+            )
+        }
+
+        @Test
+        fun `http1 should normalize literal line endings without changing the body`() {
+            val httpService = mockk<Http>()
+            val httpResponse = mockk<burp.api.montoya.http.message.HttpRequestResponse>()
+            val contentSlot = slot<String>()
+            val raw = "POST /json HTTP/1.1\\r\\nHost: example.com\\r\\nContent-Type: application/json\\r\\n\\r\\n{\"line\":\"one\\ntwo\"}"
+            val expected = "POST /json HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/json\r\n\r\n{\"line\":\"one\\ntwo\"}"
+
+            every { HttpRequest.httpRequest(any(), capture(contentSlot)) } returns mockk(relaxed = true)
+            every { api.http() } returns httpService
+            every { httpService.sendRequest(any()) } returns httpResponse
+            every { httpResponse.toString() } returns "HTTP/1.1 200 OK"
+
+            runBlocking {
+                client.callTool(
+                    "send_http1_request", mapOf(
+                        "content" to raw,
+                        "targetHostname" to "example.com",
+                        "targetPort" to 80,
+                        "usesHttps" to false
+                    )
+                ).expectTextContent("HTTP/1.1 200 OK")
+            }
+
+            assertEquals(expected, contentSlot.captured)
+        }
+
+        @Test
+        fun `repeater and intruder should use the same prelude normalization`() {
+            val repeater = mockk<Repeater>(relaxed = true)
+            val intruder = mockk<Intruder>(relaxed = true)
+            val capturedContents = mutableListOf<String>()
+            val raw = "POST /json HTTP/1.1\\nHost: example.com\\n\\n{\"line\":\"one\\ntwo\"}"
+            val expected = "POST /json HTTP/1.1\r\nHost: example.com\r\n\r\n{\"line\":\"one\\ntwo\"}"
+
+            every { HttpRequest.httpRequest(any(), capture(capturedContents)) } returns mockk(relaxed = true)
+            every { api.repeater() } returns repeater
+            every { api.intruder() } returns intruder
+
+            runBlocking {
+                listOf("create_repeater_tab", "send_to_intruder").forEach { toolName ->
+                    client.callTool(
+                        toolName, mapOf(
+                            "tabName" to "normalize-test",
+                            "content" to raw,
+                            "targetHostname" to "example.com",
+                            "targetPort" to 80,
+                            "usesHttps" to false
+                        )
+                    ).expectTextContent()
+                }
+            }
+
+            assertEquals(listOf(expected, expected), capturedContents)
+        }
+
         @Test
         fun `http1 line endings should be normalized`() {
             val httpService = mockk<Http>()
@@ -593,6 +817,42 @@ class ToolsKtTest {
     
     @Nested
     inner class ConfigurationToolsTests {
+        @Test
+        fun `configuration output tools should redact nested credentials by default`() {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            val rawOptions =
+                """{"proxy":{"password":"project-secret"},"auth":{"Certificate_Password":"cert-secret","username":"alice"}}"""
+
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.exportProjectOptionsAsJson() } returns rawOptions
+            every { burpSuite.exportUserOptionsAsJson() } returns rawOptions
+
+            runBlocking {
+                listOf("output_project_options", "output_user_options").forEach { toolName ->
+                    val text = client.callTool(toolName, emptyMap()).expectTextContent()
+                    assertFalse(text.contains("project-secret"), "$toolName leaked password: $text")
+                    assertFalse(text.contains("cert-secret"), "$toolName leaked certificate password: $text")
+                    assertTrue(text.contains("*****"), "$toolName did not mark redacted fields: $text")
+                    assertTrue(text.contains("alice"), "$toolName removed non-sensitive configuration: $text")
+                }
+            }
+        }
+
+        @Test
+        fun `configuration output should fail closed when exported json is malformed`() {
+            val burpSuite = mockk<burp.api.montoya.burpsuite.BurpSuite>()
+            val malformed = """{"password":"must-not-leak""""
+
+            every { api.burpSuite() } returns burpSuite
+            every { burpSuite.exportProjectOptionsAsJson() } returns malformed
+
+            runBlocking {
+                val text = client.callTool("output_project_options", emptyMap()).expectTextContent()
+                assertEquals("""{"error":"failed to parse config json"}""", text)
+                assertFalse(text.contains("must-not-leak"))
+            }
+        }
+
         @Test
         fun `set task execution engine state should work properly`() {
             val taskExecutionEngine = mockk<TaskExecutionEngine>()

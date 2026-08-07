@@ -9,6 +9,9 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import javax.swing.JFileChooser
 import kotlin.io.path.exists
+import kotlin.io.path.isDirectory
+import kotlin.io.path.listDirectoryEntries
+import kotlin.io.path.name
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 
@@ -68,14 +71,24 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
         val os = System.getProperty("os.name").lowercase()
         val home = System.getProperty("user.home")
 
-        val basePath = when {
-            os.contains("win") -> Path.of(home, "AppData", "Roaming", "Claude")
-            os.contains("mac") || os.contains("darwin") -> Path.of(home, "Library", "Application Support", "Claude")
-            os.contains("linux") -> Path.of(home, ".config", "Claude")
+        val candidatePaths = when {
+            os.contains("win") -> windowsCandidatePaths(home)
+            os.contains("mac") || os.contains("darwin") -> listOf(
+                Path.of(home, "Library", "Application Support", "Claude")
+            )
+            os.contains("linux") -> listOf(Path.of(home, ".config", "Claude"))
             else -> return null
         }
 
-        if (!basePath.exists()) return null
+        val existingPaths = candidatePaths.filter { it.exists() && it.isDirectory() }
+        val pathsWithConfig = existingPaths.filter { it.resolve(claudeConfigFileName).exists() }
+        val preferredPaths = pathsWithConfig.ifEmpty { existingPaths }
+        if (preferredPaths.size > 1) {
+            logging.logToOutput(
+                "Warning: multiple Claude Desktop config directories found; using ${preferredPaths.first()}: $preferredPaths"
+            )
+        }
+        val basePath = preferredPaths.firstOrNull() ?: return null
 
         val configFile = basePath.resolve(claudeConfigFileName)
         if (!configFile.exists()) {
@@ -83,6 +96,24 @@ class ClaudeDesktopProvider(private val logging: Logging, private val proxyJarMa
         }
 
         return configFile
+    }
+
+    internal fun windowsCandidatePaths(home: String): List<Path> {
+        val traditionalPath = Path.of(home, "AppData", "Roaming", "Claude")
+        val packagesDirectory = Path.of(home, "AppData", "Local", "Packages")
+        val storePaths = if (packagesDirectory.exists() && packagesDirectory.isDirectory()) {
+            runCatching {
+                packagesDirectory.listDirectoryEntries()
+                    .filter { it.isDirectory() && it.name.startsWith("Claude_") }
+                    .map { it.resolve("LocalCache").resolve("Roaming").resolve("Claude") }
+            }.getOrElse { error ->
+                logging.logToError("Failed to inspect Windows Store Claude packages: ${error.message}")
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+        return listOf(traditionalPath) + storePaths
     }
 
     private fun createDefaultConfig(path: Path): Boolean {
