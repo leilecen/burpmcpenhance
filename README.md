@@ -150,7 +150,7 @@ Burp 面板里也有"安装到 Claude Desktop"和"提取服务器代理 jar"两�
 ./gradlew embedProxyJar # 打最终分发包（含 stdio 代理 jar）
 ```
 
-CI 在 `.github/workflows/ci.yml`（构建 + 测试）和 `release.yml`（打 release 包），Linux 上跑在 Java 21。
+构建和测试都在本地跑，需要 JDK 21；第一次构建会由 Gradle wrapper 拉依赖。
 
 ## 已知限制
 
