@@ -5,6 +5,12 @@
 </p>
 
 <p>
+	This is an enhanced fork of the PortSwigger MCP server, aimed at long-running sessions: Streamable HTTP as the
+	primary transport, a background exporter with a local SQLite cache, async tasks for large responses, and a control
+	panel inside Burp.
+</p>
+
+<p>
 	For more information about the protocol, visit <a
 		href="https://modelcontextprotocol.io/">modelcontextprotocol.io</a>
 </p>
@@ -17,7 +23,7 @@
 <h2>Features</h2>
 <ul>
 	<li>Send HTTP/1.1 and HTTP/2 requests directly from AI clients with security controls</li>
-	<li>Access and filter proxy history (HTTP and WebSocket) with regex support</li>
+	<li>Access and filter proxy history (HTTP and WebSocket) with regex support, served from a local cache</li>
 	<li>Generate and poll Burp Collaborator payloads for out-of-band testing (Professional only)</li>
 	<li>Create Repeater tabs and send requests to Intruder</li>
 	<li>Export and modify project and user configuration via JSON</li>
@@ -25,6 +31,7 @@
 	<li>Built-in encoding utilities (URL, Base64) and random string generation</li>
 	<li>Automatic Claude Desktop installation with packaged stdio proxy server</li>
 	<li>Configurable target approval system for HTTP requests and history access</li>
+	<li>Streamable HTTP transport (MCP 2025-03-26) with SSE compatibility mode</li>
 </ul>
 
 <h2>Usage</h2>
@@ -37,4 +44,4 @@
 	<li>Interact with Burp through your AI client using the available MCP tools.</li>
 </ol>
 
-<p><br>Copyright &copy; 2025-2026 PortSwigger Ltd.</p>
+<p><br>Copyright &copy; 2025-2026 PortSwigger Ltd. Enhanced fork maintained by leilecen.</p>

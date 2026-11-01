@@ -41,16 +41,11 @@ bin/
 ### Mac OS ###
 .DS_Store
 
-# ai
-.claude
-.codex/
-.codegraph/
-.mcp.json
-ARCHITECTURE.md
-mcp-minimax
+### 运行产物 / 本机配置 ###
 hs_err_pid*.log
 replay_pid*.log
 test_output.txt
 .kotlin/errors/
 tmp/
 run_test.bat
+.cursor/
